@@ -113,14 +113,13 @@ fn handle_key(app: &mut App, key: KeyEvent) {
     }
     match app.mode {
         Mode::Search => search_key(app, key),
-        Mode::Normal => normal_key(app, key),
+        Mode::Preview => preview_key(app, key),
     }
 }
 
 fn search_key(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Enter => app.open = app.current(),
-        KeyCode::Tab => app.mode = Mode::Normal,
+        KeyCode::Enter => app.mode = Mode::Preview,
         KeyCode::Up => app.select_previous(),
         KeyCode::Down => app.select_next(),
         KeyCode::Backspace => {
@@ -140,7 +139,7 @@ fn search_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-fn normal_key(app: &mut App, key: KeyEvent) {
+fn preview_key(app: &mut App, key: KeyEvent) {
     let after_g = std::mem::take(&mut app.pending_g);
     match key.code {
         KeyCode::Char('q') => app.quit = true,
@@ -153,7 +152,7 @@ fn normal_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('g') => app.pending_g = true,
         // The preview clamps this to the last page.
         KeyCode::Char('G') => app.scroll = usize::MAX,
-        KeyCode::Char('o') | KeyCode::Enter => app.open = app.current(),
+        KeyCode::Char('o') => app.open = app.current(),
         _ => {}
     }
 }

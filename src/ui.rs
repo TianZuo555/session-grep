@@ -42,7 +42,7 @@ fn draw_query(frame: &mut Frame, app: &App, area: Rect) {
     };
     let style = match app.mode {
         Mode::Search => Style::default().fg(Color::Yellow),
-        Mode::Normal => Style::default().fg(Color::DarkGray),
+        Mode::Preview => Style::default().fg(Color::DarkGray),
     };
     let caret = if app.mode == Mode::Search { "▏" } else { "" };
     let line = Line::from(vec![
@@ -270,10 +270,10 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Search => (
             " SEARCH ",
             Color::Yellow,
-            "type to filter  ↑↓ select  Enter open  Tab list",
+            "type to filter  ↑↓ select  Enter preview",
         ),
-        Mode::Normal => (
-            " NORMAL ",
+        Mode::Preview => (
+            " PREVIEW ",
             Color::Blue,
             "↑↓ select  j/k scroll  gg/G top/end  o open  Esc search  q quit",
         ),

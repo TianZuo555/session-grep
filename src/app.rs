@@ -12,7 +12,7 @@ const DEBOUNCE: Duration = Duration::from_millis(200);
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum Mode {
     Search,
-    Normal,
+    Preview,
 }
 
 pub struct App {
