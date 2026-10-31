@@ -1,3 +1,4 @@
+use catppuccin::{FlavorColors, PALETTE};
 use chrono::{DateTime, Local};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -11,6 +12,13 @@ use crate::app::{App, Mode};
 use crate::model::{Agent, Message, Role, one_line};
 use crate::search::pattern;
 
+/// The Catppuccin Frappé palette.
+const C: FlavorColors = PALETTE.frappe.colors;
+
+const fn c(color: catppuccin::Color) -> Color {
+    Color::Rgb(color.rgb.r, color.rgb.g, color.rgb.b)
+}
+
 /// The wrapped preview of one session for one query and one width.
 /// Built once, then each frame draws only the visible rows.
 pub struct Rendered {
@@ -23,6 +31,10 @@ pub struct Rendered {
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    frame.render_widget(
+        Block::new().style(Style::new().bg(c(C.base)).fg(c(C.text))),
+        frame.area(),
+    );
     let [main, status] =
         Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).areas(frame.area());
     let [left, right] =
@@ -41,8 +53,8 @@ fn draw_query(frame: &mut Frame, app: &App, area: Rect) {
         " search "
     };
     let style = match app.mode {
-        Mode::Search => Style::default().fg(Color::Yellow),
-        Mode::Preview => Style::default().fg(Color::DarkGray),
+        Mode::Search => Style::new().fg(c(C.mauve)),
+        Mode::Preview => Style::new().fg(c(C.surface2)),
     };
     let caret = if app.mode == Mode::Search { "▏" } else { "" };
     let line = Line::from(vec![
@@ -67,17 +79,17 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
             let head = Line::from(vec![
                 Span::styled(
                     format!("{:<7}", session.agent.label()),
-                    Style::default()
+                    Style::new()
                         .fg(agent_color(session.agent))
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     format!("{:<8}", ago(session.modified)),
-                    Style::default().fg(Color::DarkGray),
+                    Style::new().fg(c(C.overlay1)),
                 ),
                 Span::styled(
                     one_line(&short_path(&session.cwd), width.saturating_sub(15)),
-                    Style::default().fg(Color::Cyan),
+                    Style::new().fg(c(C.teal)),
                 ),
             ]);
             let title = if session.title.is_empty() {
@@ -87,25 +99,28 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
             };
             let title = Line::from(Span::styled(
                 format!("  {}", one_line(title, width.saturating_sub(2))),
-                Style::default().fg(Color::Gray),
+                Style::new().fg(c(C.subtext0)),
             ));
             ListItem::new(vec![head, title])
         })
         .collect();
     let title = format!(" sessions {}/{} ", app.visible.len(), app.sessions.len());
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .highlight_style(
-            Style::default()
-                .bg(Color::Indexed(238))
-                .add_modifier(Modifier::BOLD),
-        );
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(focus_border(app.mode == Mode::Preview))
+                .title(title),
+        )
+        .highlight_style(Style::new().bg(c(C.surface0)).add_modifier(Modifier::BOLD));
     let mut state = ListState::default().with_selected(app.current().map(|_| app.selected));
     frame.render_stateful_widget(list, area, &mut state);
 }
 
 fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {
-    let block = Block::default().borders(Borders::ALL);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(focus_border(app.mode == Mode::Preview));
     let inner = block.inner(area);
     let Some(index) = app.current() else {
         frame.render_widget(Paragraph::new("no session").block(block), area);
@@ -156,20 +171,20 @@ fn render(
     match messages {
         Err(error) => lines.push(Line::styled(
             format!("cannot read session: {error}"),
-            Color::Red,
+            c(C.red),
         )),
         Ok(messages) if messages.is_empty() => {
-            lines.push(Line::styled("no conversation", Color::DarkGray))
+            lines.push(Line::styled("no conversation", c(C.overlay0)))
         }
         Ok(messages) => {
-            let options = Options::new(PlainMarkers).table_width(width);
+            let options = Options::new(Markdown).table_width(width);
             for message in messages {
                 match message.role {
                     // A bar marks the user turns, so that no role label is necessary.
                     Role::User => lines.extend(message.text.lines().map(|raw| {
                         Line::from(vec![
-                            Span::styled("▌ ", Color::Yellow),
-                            Span::styled(raw.to_string(), Color::Yellow),
+                            Span::styled("▌ ", c(C.blue)),
+                            Span::styled(raw.to_string(), c(C.blue)),
                         ])
                     })),
                     _ => lines.extend(
@@ -209,17 +224,59 @@ fn render(
     }
 }
 
-/// Render the markdown without the `#` heading markers and the code fences.
+/// Render the markdown in Frappé colors, without the `#` heading markers and
+/// the code fences.
 #[derive(Clone)]
-struct PlainMarkers;
+struct Markdown;
 
-impl StyleSheet for PlainMarkers {
+impl StyleSheet for Markdown {
+    fn heading(&self, level: u8) -> Style {
+        let color = match level {
+            1 => c(C.mauve),
+            2 => c(C.lavender),
+            _ => c(C.blue),
+        };
+        Style::new().fg(color).add_modifier(Modifier::BOLD)
+    }
+
     fn heading_marker(&self, _level: u8) -> &str {
         ""
     }
 
+    fn code(&self) -> Style {
+        Style::new().fg(c(C.green)).bg(c(C.mantle))
+    }
+
     fn code_block_fence(&self) -> &str {
         ""
+    }
+
+    fn link(&self) -> Style {
+        Style::new()
+            .fg(c(C.sapphire))
+            .add_modifier(Modifier::UNDERLINED)
+    }
+
+    fn blockquote(&self) -> Style {
+        Style::new()
+            .fg(c(C.overlay2))
+            .add_modifier(Modifier::ITALIC)
+    }
+
+    fn html(&self) -> Style {
+        Style::new().fg(c(C.overlay1))
+    }
+
+    fn table_header(&self) -> Style {
+        Style::new().fg(c(C.lavender)).add_modifier(Modifier::BOLD)
+    }
+
+    fn table_border(&self) -> Style {
+        Style::new().fg(c(C.surface2))
+    }
+
+    fn list_marker(&self) -> Style {
+        Style::new().fg(c(C.peach))
     }
 }
 
@@ -251,7 +308,7 @@ fn highlight(line: &mut Line<'static>, pattern: &Regex) -> bool {
             ));
             spans.push(Span::styled(
                 found.as_str().to_string(),
-                span.style.fg(Color::Black).bg(Color::Yellow),
+                span.style.fg(c(C.crust)).bg(c(C.yellow)),
             ));
             end = found.end();
         }
@@ -269,32 +326,25 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let (mode, color, hint) = match app.mode {
         Mode::Search => (
             " SEARCH ",
-            Color::Yellow,
-            "type to filter  ↑↓ select  Enter preview",
+            c(C.mauve),
+            "type to filter  ↑↓ select  Enter preview  ^D quit",
         ),
         Mode::Preview => (
             " PREVIEW ",
-            Color::Blue,
+            c(C.green),
             "↑↓ select  j/k scroll  gg/G top/end  o open  Esc search  q quit",
         ),
     };
     let mut spans = vec![
         Span::styled(
             mode,
-            Style::default()
+            Style::new()
                 .bg(color)
-                .fg(Color::Black)
+                .fg(c(C.crust))
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!(" {hint} "), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!(" {hint} "), Style::new().fg(c(C.overlay1))),
     ];
-    if let Some(index) = app.current() {
-        let command = app.sessions[index].resume_command().join(" ");
-        spans.push(Span::styled(
-            format!(" o → {command}"),
-            Style::default().fg(Color::Green),
-        ));
-    }
     if let Some(first) = app.errors.first() {
         let more = match app.errors.len() {
             1 => String::new(),
@@ -302,20 +352,28 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         };
         spans.push(Span::styled(
             format!("  ⚠ {first}{more}"),
-            Style::default().fg(Color::Red),
+            Style::new().fg(c(C.red)),
         ));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::new().bg(c(C.mantle))),
+        area,
+    );
+}
+
+/// The border of the panel that has the keyboard focus is brighter.
+fn focus_border(focused: bool) -> Style {
+    Style::new().fg(if focused { c(C.mauve) } else { c(C.surface2) })
 }
 
 fn agent_color(agent: Agent) -> Color {
     match agent {
-        Agent::Pi => Color::Magenta,
-        Agent::Codex => Color::Green,
-        Agent::Claude => Color::LightRed,
-        Agent::Cursor => Color::Blue,
-        Agent::Agy => Color::LightBlue,
-        Agent::Devin => Color::LightYellow,
+        Agent::Pi => c(C.mauve),
+        Agent::Codex => c(C.green),
+        Agent::Claude => c(C.peach),
+        Agent::Cursor => c(C.blue),
+        Agent::Agy => c(C.sapphire),
+        Agent::Devin => c(C.yellow),
     }
 }
 
