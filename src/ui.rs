@@ -5,6 +5,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use regex::Regex;
+use tui_markdown::{Options, StyleSheet};
 
 use crate::app::{App, Mode};
 use crate::model::{Agent, Message, Role, one_line};
@@ -152,36 +153,41 @@ fn render(
 ) -> Rendered {
     let pattern = (!key.1.is_empty()).then(|| pattern(&key.1));
     let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut first_match_line = None;
     match messages {
         Err(error) => lines.push(Line::styled(
             format!("cannot read session: {error}"),
             Color::Red,
         )),
         Ok(messages) if messages.is_empty() => {
-            lines.push(Line::styled("no transcript", Color::DarkGray))
+            lines.push(Line::styled("no conversation", Color::DarkGray))
         }
         Ok(messages) => {
-            for message in messages.iter().filter(|m| m.role != Role::System) {
-                lines.push(Line::styled(
-                    format!("── {} ──", message.role.label()),
-                    Style::default()
-                        .fg(role_color(message.role))
-                        .add_modifier(Modifier::BOLD),
-                ));
-                // A tool call or a tool result fills one line only.
-                let text = match message.role {
-                    Role::Tool => one_line(&message.text, width.saturating_sub(1) as usize),
-                    _ => message.text.clone(),
-                };
-                for raw in text.lines() {
-                    let line = highlight(raw, text_color(message.role), pattern.as_ref());
-                    if first_match_line.is_none() && line.spans.len() > 1 {
-                        first_match_line = Some(lines.len());
-                    }
-                    lines.push(line);
+            let options = Options::new(PlainMarkers).table_width(width);
+            for message in messages {
+                match message.role {
+                    // A bar marks the user turns, so that no role label is necessary.
+                    Role::User => lines.extend(message.text.lines().map(|raw| {
+                        Line::from(vec![
+                            Span::styled("▌ ", Color::Yellow),
+                            Span::styled(raw.to_string(), Color::Yellow),
+                        ])
+                    })),
+                    _ => lines.extend(
+                        tui_markdown::from_str_with_options(&message.text, &options)
+                            .lines
+                            .into_iter()
+                            .map(owned),
+                    ),
                 }
                 lines.push(Line::default());
+            }
+        }
+    }
+    let mut first_match_line = None;
+    if let Some(pattern) = &pattern {
+        for (index, line) in lines.iter_mut().enumerate() {
+            if highlight(line, pattern) && first_match_line.is_none() {
+                first_match_line = Some(index);
             }
         }
     }
@@ -203,27 +209,60 @@ fn render(
     }
 }
 
-/// Split one line into spans so that each match shows in reverse video.
-fn highlight(raw: &str, color: Color, pattern: Option<&Regex>) -> Line<'static> {
-    let base = Style::default().fg(color);
-    let Some(pattern) = pattern else {
-        return Line::styled(raw.to_string(), base);
-    };
-    let mut spans = Vec::new();
-    let mut end = 0;
-    for found in pattern.find_iter(raw) {
-        spans.push(Span::styled(raw[end..found.start()].to_string(), base));
-        spans.push(Span::styled(
-            found.as_str().to_string(),
-            Style::default().fg(Color::Black).bg(Color::Yellow),
-        ));
-        end = found.end();
+/// Render the markdown without the `#` heading markers and the code fences.
+#[derive(Clone)]
+struct PlainMarkers;
+
+impl StyleSheet for PlainMarkers {
+    fn heading_marker(&self, _level: u8) -> &str {
+        ""
     }
-    if spans.is_empty() {
-        return Line::styled(raw.to_string(), base);
+
+    fn code_block_fence(&self) -> &str {
+        ""
     }
-    spans.push(Span::styled(raw[end..].to_string(), base));
-    Line::from(spans)
+}
+
+/// The rendered markdown borrows from the message text. The cache keeps the
+/// lines longer than that, so they must own their text.
+fn owned(line: Line<'_>) -> Line<'static> {
+    let spans: Vec<Span<'static>> = line
+        .spans
+        .into_iter()
+        .map(|span| Span::styled(span.content.into_owned(), span.style))
+        .collect();
+    Line::from(spans).style(line.style)
+}
+
+/// Split the spans of a line so that each match shows on a yellow background.
+/// A match that crosses two spans is not marked. Returns true when the line
+/// holds a marked match.
+fn highlight(line: &mut Line<'static>, pattern: &Regex) -> bool {
+    let mut found_any = false;
+    let mut spans = Vec::with_capacity(line.spans.len());
+    for span in line.spans.drain(..) {
+        let text = span.content.as_ref();
+        let mut end = 0;
+        for found in pattern.find_iter(text) {
+            found_any = true;
+            spans.push(Span::styled(
+                text[end..found.start()].to_string(),
+                span.style,
+            ));
+            spans.push(Span::styled(
+                found.as_str().to_string(),
+                span.style.fg(Color::Black).bg(Color::Yellow),
+            ));
+            end = found.end();
+        }
+        if end == 0 {
+            spans.push(span);
+        } else {
+            spans.push(Span::styled(text[end..].to_string(), span.style));
+        }
+    }
+    line.spans = spans;
+    found_any
 }
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
@@ -231,12 +270,12 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Search => (
             " SEARCH ",
             Color::Yellow,
-            "type to filter  ↑↓ select  Esc/Enter normal",
+            "type to filter  ↑↓ select  Enter open  Tab list",
         ),
         Mode::Normal => (
             " NORMAL ",
             Color::Blue,
-            "j/k select  J/K scroll  gg/G top/end  / search  o open  q quit",
+            "↑↓ select  j/k scroll  gg/G top/end  o open  Esc search  q quit",
         ),
     };
     let mut spans = vec![
@@ -280,24 +319,6 @@ fn agent_color(agent: Agent) -> Color {
     }
 }
 
-fn role_color(role: Role) -> Color {
-    match role {
-        Role::User => Color::Yellow,
-        Role::Assistant => Color::Green,
-        Role::Thinking => Color::Magenta,
-        Role::Tool => Color::Blue,
-        Role::System => Color::DarkGray,
-    }
-}
-
-fn text_color(role: Role) -> Color {
-    match role {
-        Role::Thinking | Role::System => Color::DarkGray,
-        Role::Tool => Color::Indexed(109),
-        Role::User | Role::Assistant => Color::White,
-    }
-}
-
 fn short_path(path: &str) -> String {
     match dirs::home_dir().and_then(|home| path.strip_prefix(home.to_str()?).map(String::from)) {
         Some(rest) => format!("~{rest}"),
@@ -320,21 +341,24 @@ mod tests {
 
     #[test]
     fn highlight_marks_each_match() {
-        let line = highlight("a Foo b foo", Color::White, Some(&pattern("foo")));
+        let mut line = Line::from("a Foo b foo");
+        assert!(highlight(&mut line, &pattern("foo")));
         let texts: Vec<_> = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(texts, ["a ", "Foo", " b ", "foo", ""]);
     }
 
     #[test]
-    fn render_finds_first_match_row_and_skips_system() {
+    fn render_hides_roles_and_markdown_markers() {
         let messages = Ok(vec![
-            Message::new(Role::System, "needle in the system prompt"),
             Message::new(Role::User, "one\ntwo"),
-            Message::new(Role::Assistant, "the needle"),
+            Message::new(Role::Assistant, "## Title\n\n```rust\nlet needle = 1;\n```"),
         ]);
         let rendered = render((0, "needle".into(), 80), &messages, 80);
-        // user header, one, two, blank, assistant header, match
-        assert_eq!(rendered.first_match, Some(5));
-        assert_eq!(rendered.rows, 7);
+        let text: Vec<String> = rendered.lines.iter().map(|l| l.to_string()).collect();
+        assert_eq!(text[..3], ["▌ one", "▌ two", ""]);
+        assert!(!text.iter().any(|l| l.contains("##") || l.contains("```")));
+        assert!(text.iter().any(|l| l == "Title"));
+        let needle = text.iter().position(|l| l.contains("let needle")).unwrap();
+        assert_eq!(rendered.first_match, Some(rendered.starts[needle]));
     }
 }

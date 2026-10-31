@@ -119,7 +119,8 @@ fn handle_key(app: &mut App, key: KeyEvent) {
 
 fn search_key(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Esc | KeyCode::Enter => app.mode = Mode::Normal,
+        KeyCode::Enter => app.open = app.current(),
+        KeyCode::Tab => app.mode = Mode::Normal,
         KeyCode::Up => app.select_previous(),
         KeyCode::Down => app.select_next(),
         KeyCode::Backspace => {
@@ -143,11 +144,11 @@ fn normal_key(app: &mut App, key: KeyEvent) {
     let after_g = std::mem::take(&mut app.pending_g);
     match key.code {
         KeyCode::Char('q') => app.quit = true,
-        KeyCode::Char('/') | KeyCode::Char('i') => app.mode = Mode::Search,
-        KeyCode::Char('j') | KeyCode::Down => app.select_next(),
-        KeyCode::Char('k') | KeyCode::Up => app.select_previous(),
-        KeyCode::Char('J') => app.scroll += 1,
-        KeyCode::Char('K') => app.scroll = app.scroll.saturating_sub(1),
+        KeyCode::Esc | KeyCode::Char('/') => app.mode = Mode::Search,
+        KeyCode::Down => app.select_next(),
+        KeyCode::Up => app.select_previous(),
+        KeyCode::Char('j') => app.scroll += 1,
+        KeyCode::Char('k') => app.scroll = app.scroll.saturating_sub(1),
         KeyCode::Char('g') if after_g => app.scroll = 0,
         KeyCode::Char('g') => app.pending_g = true,
         // The preview clamps this to the last page.

@@ -9,8 +9,9 @@ use regex::{Regex, RegexBuilder};
 use crate::model::{Message, Role, Session};
 use crate::providers;
 
-/// Parsed transcripts, loaded on first use and shared by the preview and the
-/// content search. A failed load keeps its error text for the preview.
+/// The conversation of each session, loaded on first use and shared by the
+/// preview and the content search. A failed load keeps its error text for the
+/// preview.
 pub struct Transcripts {
     sessions: Arc<Vec<Session>>,
     slots: Vec<OnceLock<Result<Vec<Message>, String>>>,
@@ -37,7 +38,9 @@ impl Transcripts {
 
     pub fn get(&self, index: usize) -> &Result<Vec<Message>, String> {
         self.slots[index].get_or_init(|| {
-            providers::transcript(&self.sessions[index]).map_err(|error| format!("{error:#}"))
+            providers::transcript(&self.sessions[index])
+                .map(conversation)
+                .map_err(|error| format!("{error:#}"))
         })
     }
 }
@@ -94,12 +97,19 @@ pub fn pattern(query: &str) -> Regex {
         .expect("an escaped literal is a valid regex")
 }
 
+/// Only the user and assistant text. The preview hides the tool calls and the
+/// thinking, so the search ignores them too: each hit is visible.
+fn conversation(messages: Vec<Message>) -> Vec<Message> {
+    messages
+        .into_iter()
+        .filter(|m| matches!(m.role, Role::User | Role::Assistant))
+        .collect()
+}
+
 fn matches(transcript: &Result<Vec<Message>, String>, pattern: &Regex) -> bool {
-    transcript.as_ref().is_ok_and(|messages| {
-        messages
-            .iter()
-            .any(|m| m.role != Role::System && pattern.is_match(&m.text))
-    })
+    transcript
+        .as_ref()
+        .is_ok_and(|messages| messages.iter().any(|m| pattern.is_match(&m.text)))
 }
 
 /// Case-insensitive substring match over the session metadata.
@@ -118,12 +128,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn content_match_skips_system_messages() {
-        let pattern = pattern("Needle");
-        let system = Ok(vec![Message::new(Role::System, "needle in instructions")]);
-        let user = Ok(vec![Message::new(Role::User, "find the NEEDLE")]);
-        assert!(!matches(&system, &pattern));
-        assert!(matches(&user, &pattern));
+    fn conversation_keeps_only_user_and_assistant() {
+        let kept = conversation(vec![
+            Message::new(Role::System, "rules"),
+            Message::new(Role::User, "ask"),
+            Message::new(Role::Thinking, "plan"),
+            Message::new(Role::Tool, "ls()"),
+            Message::new(Role::Assistant, "answer"),
+        ]);
+        assert_eq!(
+            kept,
+            [
+                Message::new(Role::User, "ask"),
+                Message::new(Role::Assistant, "answer")
+            ]
+        );
+    }
+
+    #[test]
+    fn content_match_is_case_insensitive() {
+        let found = Ok(vec![Message::new(Role::User, "find the NEEDLE")]);
+        assert!(matches(&found, &pattern("Needle")));
+        assert!(!matches(&found, &pattern("other")));
     }
 
     #[test]
