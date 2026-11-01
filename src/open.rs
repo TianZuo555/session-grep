@@ -8,12 +8,21 @@ use crate::model::Session;
 
 /// The shell equivalent of `exec`, for `--print-command` and for the log line.
 pub fn describe(session: &Session) -> String {
-    let command: Vec<String> = session
+    format!(
+        "cd {} && {}",
+        shell_quote(&session.cwd),
+        command_line(session)
+    )
+}
+
+/// The resume command as one line for a shell.
+pub fn command_line(session: &Session) -> String {
+    let words: Vec<String> = session
         .resume_command()
         .iter()
-        .map(|a| shell_quote(a))
+        .map(|word| shell_quote(word))
         .collect();
-    format!("cd {} && {}", shell_quote(&session.cwd), command.join(" "))
+    words.join(" ")
 }
 
 /// Replace this process with the agent, in the directory of the session.

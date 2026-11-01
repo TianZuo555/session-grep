@@ -1,4 +1,5 @@
 mod app;
+mod herdr;
 mod model;
 mod open;
 mod providers;
@@ -77,6 +78,12 @@ fn main() -> Result<()> {
 
     if let Some(index) = app.open {
         let session = &app.sessions[index];
+        if herdr::inside() {
+            let own_pane = std::env::var("HERDR_PANE_ID").unwrap_or_default();
+            if let Some(target) = herdr::target(session, &herdr::panes()?, &own_pane) {
+                return herdr::open(session, &target);
+            }
+        }
         eprintln!("{}", open::describe(session));
         return Err(open::exec(session));
     }
