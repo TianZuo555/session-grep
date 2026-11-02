@@ -28,6 +28,7 @@ pub fn discover(since: DateTime<Local>) -> Result<Vec<Result<Session>>> {
             .unwrap_or_default()
             .to_string(),
         title: json::title_of(&messages(&head)),
+        names: Vec::new(),
         modified: found.modified,
         source: Source::File(found.path),
     })

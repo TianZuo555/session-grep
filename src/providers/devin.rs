@@ -44,6 +44,7 @@ pub fn discover(since: DateTime<Local>) -> Result<Vec<Result<Session>>> {
             id: id.clone(),
             cwd,
             title: one_line(&title.unwrap_or_default(), 160),
+            names: Vec::new(),
             modified,
             source: Source::Row {
                 db: db.clone(),

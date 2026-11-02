@@ -1,10 +1,12 @@
 mod app;
 mod herdr;
 mod model;
+mod names;
 mod open;
 mod providers;
 mod rex;
 mod search;
+mod theme;
 mod ui;
 
 use std::time::Duration;
@@ -39,7 +41,13 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let (sessions, errors) = providers::discover(Local::now() - Days::days(args.days));
+    let (mut sessions, mut errors) = providers::discover(Local::now() - Days::days(args.days));
+    if args.dump.is_none()
+        && args.print_command.is_none()
+        && let Err(error) = names::refresh(&mut sessions)
+    {
+        errors.push(format!("terminal names: {error:#}"));
+    }
     // The TUI shows the errors in its status line.
     if args.list || args.dump.is_some() || args.print_command.is_some() {
         for error in &errors {
@@ -55,7 +63,7 @@ fn main() -> Result<()> {
                 ui::ago(s.modified),
                 s.id,
                 one_line(&s.cwd, 40),
-                one_line(&s.title, 80),
+                one_line(&format!("{} {}", s.names.join(" · "), s.title), 80),
             );
         }
         return Ok(());
@@ -125,6 +133,10 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         app.quit = true;
         return;
     }
+    if app.theme_menu.is_some() {
+        theme_key(app, key);
+        return;
+    }
     if key.code == KeyCode::Enter {
         app.open = app.current();
         return;
@@ -157,11 +169,28 @@ fn search_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+fn theme_key(app: &mut App, key: KeyEvent) {
+    let Some(selected) = app.theme_menu else {
+        return;
+    };
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => app.theme_menu = Some(selected.previous()),
+        KeyCode::Down | KeyCode::Char('j') => app.theme_menu = Some(selected.next()),
+        KeyCode::Enter => {
+            app.theme = selected;
+            app.theme_menu = None;
+        }
+        KeyCode::Esc | KeyCode::Char('t' | 'T') => app.theme_menu = None,
+        _ => {}
+    }
+}
+
 fn browse_key(app: &mut App, key: KeyEvent) {
     let after_g = std::mem::take(&mut app.pending_g);
     match key.code {
         KeyCode::Char('q') => app.quit = true,
         KeyCode::Char('s' | 'S') => app.mode = Mode::Search,
+        KeyCode::Char('t' | 'T') => app.theme_menu = Some(app.theme),
         KeyCode::Down => app.select_next(),
         KeyCode::Up => app.select_previous(),
         KeyCode::Char('j') => app.scroll += 1,
@@ -188,6 +217,7 @@ mod tests {
                     id: id.into(),
                     cwd: "/work/project".into(),
                     title: id.into(),
+                    names: Vec::new(),
                     modified: Local::now(),
                     source: Source::File("/missing/session.jsonl".into()),
                 })
@@ -218,6 +248,54 @@ mod tests {
         press(&mut app, KeyCode::Char('S'));
         assert_eq!(app.mode, Mode::Search);
         assert_eq!(app.query, "second");
+    }
+
+    #[test]
+    fn theme_menu_applies_selection_without_opening_a_session() {
+        use theme::Theme;
+
+        let mut app = app();
+        press(&mut app, KeyCode::Char('t'));
+        assert_eq!(app.theme_menu, Some(Theme::Frappe));
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.theme_menu, Some(Theme::Paper));
+        assert_eq!(app.theme, Theme::Frappe);
+        assert_eq!(app.current(), Some(0));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.theme, Theme::Paper);
+        assert_eq!(app.theme_menu, None);
+        assert_eq!(app.open, None);
+        press(&mut app, KeyCode::Char('T'));
+        assert_eq!(app.theme_menu, Some(Theme::Paper));
+    }
+
+    #[test]
+    fn theme_menu_wraps_and_escape_preserves_current_theme() {
+        use theme::Theme;
+
+        let mut app = app();
+        press(&mut app, KeyCode::Char('T'));
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.theme_menu, Some(Theme::Akua));
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.theme_menu, Some(Theme::Frappe));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char('q'));
+        press(&mut app, KeyCode::Char('s'));
+        assert!(!app.quit);
+        assert_eq!(app.mode, Mode::Browse);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.theme_menu, None);
+        assert_eq!(app.theme, Theme::Frappe);
+    }
+
+    #[test]
+    fn theme_key_is_text_in_search() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('s'));
+        press(&mut app, KeyCode::Char('t'));
+        assert_eq!(app.query, "t");
+        assert_eq!(app.theme_menu, None);
     }
 
     #[test]

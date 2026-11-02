@@ -6,10 +6,101 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
-use crate::model::Session;
+use crate::model::{Agent, Session};
+use crate::names::{self, Names};
 
 pub fn inside() -> bool {
     std::env::var("REX_SESSION").is_ok_and(|value| !value.is_empty())
+}
+
+pub fn names(sessions: &[Session]) -> Result<Vec<Names>> {
+    let server = rex(&["whoami", "--json"])?;
+    let host = server["host_id"]
+        .as_str()
+        .context("rex whoami returned no host")?;
+    let listed = rex(&["ls", "--json"])?;
+    let listed = listed["sessions"]
+        .as_array()
+        .context("rex ls returned no sessions")?;
+    let mut result = Vec::new();
+    for item in listed {
+        let Some(id) = item["session_id"].as_str() else {
+            continue;
+        };
+        let Ok(view) = rex(&["window", "ls", "-s", id, "--json"]) else {
+            continue;
+        };
+        let Some(windows) = view["windows"].as_array() else {
+            continue;
+        };
+        for window in windows {
+            for layer in window["layers"].as_array().into_iter().flatten() {
+                for block in layer["blocks"].as_array().into_iter().flatten() {
+                    if block["creator_name"] != "com.superlogical.terminal"
+                        || block["host_id"] != host
+                    {
+                        continue;
+                    }
+                    let Some(block_id) = block["block_id"].as_str() else {
+                        continue;
+                    };
+                    let Ok(process) = rex(&["block", "call", "-s", id, "-b", block_id, "process"])
+                    else {
+                        continue;
+                    };
+                    let foreground = &process["foreground"];
+                    let Some(agent) = process_agent(foreground) else {
+                        continue;
+                    };
+                    let Some(cwd) = foreground["cwd"].as_str() else {
+                        continue;
+                    };
+                    let command = foreground["pid"]
+                        .as_u64()
+                        .and_then(|pid| {
+                            Command::new("ps")
+                                .args(["-ww", "-p", &pid.to_string(), "-o", "command="])
+                                .output()
+                                .ok()
+                                .filter(|output| output.status.success())
+                                .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+                        })
+                        .unwrap_or_default();
+                    if let Some(session) =
+                        names::resolve_rex(sessions, agent, cwd, &command, block_id)
+                    {
+                        result.push(Names {
+                            identity: session.id.clone(),
+                            names: names::custom_names([
+                                block["label"].as_str().unwrap_or_default(),
+                                window["label"].as_str().unwrap_or_default(),
+                            ]),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn process_agent(process: &Value) -> Option<Agent> {
+    ["argv0", "name", "script"]
+        .into_iter()
+        .filter_map(|field| process[field].as_str())
+        .find_map(|value| {
+            let name = Path::new(value).file_stem()?.to_str()?;
+            match name {
+                "pi" => Some(Agent::Pi),
+                "codex" => Some(Agent::Codex),
+                "claude" => Some(Agent::Claude),
+                "cursor-agent" => Some(Agent::Cursor),
+                "agy" => Some(Agent::Agy),
+                "devin" => Some(Agent::Devin),
+                _ if value.contains("pi-coding-agent/") => Some(Agent::Pi),
+                _ => None,
+            }
+        })
 }
 
 /// Open a new tab when a terminal in Rex has the agent session's directory.
@@ -116,7 +207,7 @@ fn in_directory(process: &Value, cwd: &str) -> bool {
         .any(|dir| same_directory(dir, cwd))
 }
 
-fn same_directory(left: &str, right: &str) -> bool {
+pub(crate) fn same_directory(left: &str, right: &str) -> bool {
     if left.is_empty() || right.is_empty() {
         return false;
     }

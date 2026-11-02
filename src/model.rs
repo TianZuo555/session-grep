@@ -43,6 +43,8 @@ pub struct Session {
     pub id: String,
     pub cwd: String,
     pub title: String,
+    /// User-defined terminal pane and tab labels.
+    pub names: Vec<String>,
     pub modified: DateTime<Local>,
     pub source: Source,
 }
@@ -51,11 +53,12 @@ impl Session {
     /// The text that the instant search filter matches against.
     pub fn haystack(&self) -> String {
         format!(
-            "{} {} {} {}",
+            "{} {} {} {} {}",
             self.agent.label(),
             self.id,
             self.cwd,
-            self.title
+            self.title,
+            self.names.join(" ")
         )
         .to_lowercase()
     }
@@ -154,6 +157,7 @@ mod tests {
             id: "abc".into(),
             cwd: "/w".into(),
             title: String::new(),
+            names: Vec::new(),
             modified: Local::now(),
             source,
         }

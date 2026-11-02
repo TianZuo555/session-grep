@@ -1,4 +1,3 @@
-use catppuccin::{FlavorColors, PALETTE};
 use chrono::{DateTime, Local};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -10,20 +9,16 @@ use tui_markdown::{Options, StyleSheet};
 
 use crate::app::{App, Mode};
 use crate::model::{Agent, Message, Role, one_line};
-use crate::search::pattern;
-
-/// The Catppuccin Frappé palette.
-const C: FlavorColors = PALETTE.frappe.colors;
-
-const fn c(color: catppuccin::Color) -> Color {
-    Color::Rgb(color.rgb.r, color.rgb.g, color.rgb.b)
-}
+use crate::search::Query;
+use crate::theme::{Colors, Theme};
 
 /// The wrapped preview of one session for one query and one width.
 /// Built once, then each frame draws only the visible rows.
 pub struct Rendered {
-    key: (usize, String, u16),
+    key: (usize, String, u16, Theme),
     lines: Vec<Line<'static>>,
+    /// User-message lines reserve a separate two-column gutter.
+    user_lines: Vec<bool>,
     /// The first wrapped row of each line.
     starts: Vec<usize>,
     rows: usize,
@@ -31,8 +26,9 @@ pub struct Rendered {
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    let colors = app.theme.colors();
     frame.render_widget(
-        Block::new().style(Style::new().bg(c(C.base)).fg(c(C.text))),
+        Block::new().style(Style::new().bg(colors.base).fg(colors.text)),
         frame.area(),
     );
     let [main, status] =
@@ -43,30 +39,75 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_preview(frame, app, right);
     draw_status(frame, app, status);
     if app.mode == Mode::Search {
-        let [_, query, _] = Layout::horizontal([
-            Constraint::Fill(1),
-            Constraint::Length(76),
-            Constraint::Fill(1),
-        ])
-        .areas(main);
-        let [_, query, _] = Layout::vertical([
-            Constraint::Length(2),
-            Constraint::Length(3),
-            Constraint::Min(0),
-        ])
-        .areas(query);
+        let query = search_area(main);
         frame.render_widget(Clear, query);
         draw_query(frame, app, query);
     }
+    if app.theme_menu.is_some() {
+        draw_theme_menu(frame, app, frame.area());
+    }
+}
+
+fn draw_theme_menu(frame: &mut Frame, app: &App, area: Rect) {
+    let colors = app.theme.colors();
+    let width = area.width.min(28);
+    let height = area
+        .height
+        .saturating_sub(1)
+        .min(Theme::ALL.len() as u16 + 2);
+    let menu = Rect::new(
+        area.x + 9.min(area.width.saturating_sub(width)),
+        area.y + area.height.saturating_sub(height + 1),
+        width,
+        height,
+    );
+    let items = Theme::ALL.map(|theme| {
+        let marker = if theme == app.theme { "●" } else { " " };
+        ListItem::new(format!("{marker} {}", theme.label()))
+    });
+    let list = List::new(items)
+        .style(Style::new().bg(colors.base).fg(colors.text))
+        .block(
+            Block::bordered()
+                .border_style(Style::new().fg(colors.mauve))
+                .title(" theme "),
+        )
+        .highlight_symbol("› ")
+        .highlight_style(
+            Style::new()
+                .bg(colors.surface0)
+                .fg(colors.mauve)
+                .add_modifier(Modifier::BOLD),
+        );
+    let selected = Theme::ALL
+        .iter()
+        .position(|theme| Some(*theme) == app.theme_menu);
+    let mut state = ListState::default().with_selected(selected);
+    frame.render_widget(Clear, menu);
+    frame.render_stateful_widget(list, menu, &mut state);
+}
+
+/// Center the input on the upper golden-section point (38.2% of the height).
+fn search_area(area: Rect) -> Rect {
+    let width = area.width.min(76);
+    let height = area.height.min(3);
+    let center = ((u32::from(area.height) * 382 + 500) / 1000) as u16;
+    Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + center.saturating_sub(height / 2).min(area.height - height),
+        width,
+        height,
+    )
 }
 
 fn draw_query(frame: &mut Frame, app: &App, area: Rect) {
+    let colors = app.theme.colors();
     let title = if app.scanning {
         " search · scanning content… "
     } else {
         " search "
     };
-    let style = Style::new().fg(c(C.mauve));
+    let style = Style::new().fg(colors.mauve);
     let line = Line::from(vec![
         Span::styled("> ", style),
         Span::raw(app.query.clone()),
@@ -76,10 +117,20 @@ fn draw_query(frame: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(style)
         .title(title);
-    frame.render_widget(Paragraph::new(line).block(block), area);
+    let overflow = line
+        .width()
+        .saturating_sub(area.width.saturating_sub(2) as usize);
+    frame.render_widget(
+        Paragraph::new(line)
+            .style(Style::new().bg(colors.base).fg(colors.text))
+            .scroll((0, overflow.min(u16::MAX as usize) as u16))
+            .block(block),
+        area,
+    );
 }
 
 fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
+    let colors = app.theme.colors();
     let width = area.width.saturating_sub(4) as usize;
     let items: Vec<ListItem> = app
         .visible
@@ -90,16 +141,16 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled(
                     format!("{:<7}", session.agent.label()),
                     Style::new()
-                        .fg(agent_color(session.agent))
+                        .fg(agent_color(session.agent, colors))
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     format!("{:<8}", ago(session.modified)),
-                    Style::new().fg(c(C.overlay1)),
+                    Style::new().fg(colors.overlay1),
                 ),
                 Span::styled(
                     one_line(&short_path(&session.cwd), width.saturating_sub(15)),
-                    Style::new().fg(c(C.teal)),
+                    Style::new().fg(colors.teal),
                 ),
             ]);
             let title = if session.title.is_empty() {
@@ -109,9 +160,22 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
             };
             let title = Line::from(Span::styled(
                 format!("  {}", one_line(title, width.saturating_sub(2))),
-                Style::new().fg(c(C.subtext0)),
+                Style::new().fg(colors.subtext0),
             ));
-            ListItem::new(vec![head, title])
+            let mut lines = vec![head];
+            if !session.names.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  {}",
+                        one_line(&session.names.join(" · "), width.saturating_sub(2))
+                    ),
+                    Style::new()
+                        .fg(colors.lavender)
+                        .add_modifier(Modifier::BOLD),
+                )));
+            }
+            lines.push(title);
+            ListItem::new(lines)
         })
         .collect();
     let title = format!(" sessions {}/{} ", app.visible.len(), app.sessions.len());
@@ -119,24 +183,34 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(focus_border(app.mode == Mode::Browse))
+                .border_style(focus_border(app.mode == Mode::Browse, colors))
                 .title(title),
         )
-        .highlight_style(Style::new().bg(c(C.surface0)).add_modifier(Modifier::BOLD));
+        .highlight_style(
+            Style::new()
+                .bg(colors.surface0)
+                .add_modifier(Modifier::BOLD),
+        );
     let mut state = ListState::default().with_selected(app.current().map(|_| app.selected));
     frame.render_stateful_widget(list, area, &mut state);
 }
 
 fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {
+    let colors = app.theme.colors();
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(focus_border(app.mode == Mode::Browse));
+        .border_style(focus_border(app.mode == Mode::Browse, colors));
     let inner = block.inner(area);
     let Some(index) = app.current() else {
         frame.render_widget(Paragraph::new("no session").block(block), area);
         return;
     };
-    let key = (index, app.query.trim().to_lowercase(), inner.width);
+    let key = (
+        index,
+        app.query.trim().to_lowercase(),
+        inner.width,
+        app.theme,
+    );
     if app.preview.as_ref().is_none_or(|r| r.key != key) {
         let messages = app.transcripts.get(index);
         app.preview = Some(render(key, messages, inner.width));
@@ -157,46 +231,89 @@ fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {
     let last = preview
         .starts
         .partition_point(|&start| start < app.scroll + height);
-    let offset = app.scroll - preview.starts.get(first).copied().unwrap_or(0);
     let title = format!(
         " preview {}-{}/{} ",
         app.scroll + 1,
         (app.scroll + height).min(preview.rows),
         preview.rows
     );
-    let paragraph = Paragraph::new(preview.lines[first..last].to_vec())
-        .wrap(Wrap { trim: false })
-        .scroll((offset as u16, 0))
-        .block(block.title(title));
-    frame.render_widget(paragraph, area);
+    frame.render_widget(block.title(title), area);
+    draw_preview_rows(frame, preview, inner, app.scroll, first..last, colors);
+}
+
+fn draw_preview_rows(
+    frame: &mut Frame,
+    preview: &Rendered,
+    inner: Rect,
+    scroll: usize,
+    visible: std::ops::Range<usize>,
+    colors: Colors,
+) {
+    for index in visible {
+        let start = preview.starts[index];
+        let end = preview
+            .starts
+            .get(index + 1)
+            .copied()
+            .unwrap_or(preview.rows);
+        let top = start.max(scroll);
+        let bottom = end.min(scroll + inner.height as usize);
+        if top >= bottom {
+            continue;
+        }
+        let mut area = Rect::new(
+            inner.x,
+            inner.y + (top - scroll) as u16,
+            inner.width,
+            (bottom - top) as u16,
+        );
+        if preview.user_lines[index] {
+            let bars = vec![Line::styled("▌", colors.blue); area.height as usize];
+            frame.render_widget(
+                Paragraph::new(bars),
+                Rect::new(area.x, area.y, area.width.min(1), area.height),
+            );
+            let gutter = area.width.min(2);
+            area.x += gutter;
+            area.width -= gutter;
+        }
+        frame.render_widget(
+            Paragraph::new(preview.lines[index].clone())
+                .wrap(Wrap { trim: false })
+                .scroll(((top - start).min(u16::MAX as usize) as u16, 0)),
+            area,
+        );
+    }
 }
 
 fn render(
-    key: (usize, String, u16),
+    key: (usize, String, u16, Theme),
     messages: &Result<Vec<Message>, String>,
     width: u16,
 ) -> Rendered {
-    let pattern = (!key.1.is_empty()).then(|| pattern(&key.1));
+    let colors = key.3.colors();
+    let pattern = Query::new(&key.1).highlight_pattern();
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut user_lines = Vec::new();
     match messages {
         Err(error) => lines.push(Line::styled(
             format!("cannot read session: {error}"),
-            c(C.red),
+            colors.red,
         )),
         Ok(messages) if messages.is_empty() => {
-            lines.push(Line::styled("no conversation", c(C.overlay0)))
+            lines.push(Line::styled("no conversation", colors.overlay0))
         }
         Ok(messages) => {
-            let options = Options::new(Markdown).table_width(width);
+            let options = Options::new(Markdown(colors)).table_width(width);
             for message in messages {
                 match message.role {
-                    // A bar marks the user turns, so that no role label is necessary.
-                    Role::User => lines.extend(message.text.lines().map(|raw| {
-                        Line::from(vec![
-                            Span::styled("▌ ", c(C.blue)),
-                            Span::styled(raw.to_string(), c(C.blue)),
-                        ])
-                    })),
+                    // The gutter is drawn separately on every wrapped row.
+                    Role::User => lines.extend(
+                        message
+                            .text
+                            .lines()
+                            .map(|raw| Line::styled(raw.to_string(), colors.blue)),
+                    ),
                     _ => lines.extend(
                         tui_markdown::from_str_with_options(&message.text, &options)
                             .lines
@@ -204,47 +321,52 @@ fn render(
                             .map(owned),
                     ),
                 }
+                user_lines.resize(lines.len(), message.role == Role::User);
                 lines.push(Line::default());
+                user_lines.push(false);
             }
         }
     }
+    user_lines.resize(lines.len(), false);
     let mut first_match_line = None;
     if let Some(pattern) = &pattern {
         for (index, line) in lines.iter_mut().enumerate() {
-            if highlight(line, pattern) && first_match_line.is_none() {
+            if highlight(line, pattern, colors) && first_match_line.is_none() {
                 first_match_line = Some(index);
             }
         }
     }
     let mut starts = Vec::with_capacity(lines.len());
     let mut rows = 0;
-    for line in &lines {
+    for (index, line) in lines.iter().enumerate() {
         starts.push(rows);
+        let content_width = width.saturating_sub(if user_lines[index] { 2 } else { 0 });
         rows += Paragraph::new(line.clone())
             .wrap(Wrap { trim: false })
-            .line_count(width)
+            .line_count(content_width)
             .max(1);
     }
     Rendered {
         first_match: first_match_line.map(|line| starts[line]),
         key,
         lines,
+        user_lines,
         starts,
         rows,
     }
 }
 
-/// Render the markdown in Frappé colors, without the `#` heading markers and
+/// Render markdown in the selected theme, without the `#` heading markers and
 /// the code fences.
 #[derive(Clone)]
-struct Markdown;
+struct Markdown(Colors);
 
 impl StyleSheet for Markdown {
     fn heading(&self, level: u8) -> Style {
         let color = match level {
-            1 => c(C.mauve),
-            2 => c(C.lavender),
-            _ => c(C.blue),
+            1 => self.0.mauve,
+            2 => self.0.lavender,
+            _ => self.0.blue,
         };
         Style::new().fg(color).add_modifier(Modifier::BOLD)
     }
@@ -254,7 +376,7 @@ impl StyleSheet for Markdown {
     }
 
     fn code(&self) -> Style {
-        Style::new().fg(c(C.green)).bg(c(C.mantle))
+        Style::new().fg(self.0.green).bg(self.0.mantle)
     }
 
     fn code_block_fence(&self) -> &str {
@@ -263,30 +385,32 @@ impl StyleSheet for Markdown {
 
     fn link(&self) -> Style {
         Style::new()
-            .fg(c(C.sapphire))
+            .fg(self.0.sapphire)
             .add_modifier(Modifier::UNDERLINED)
     }
 
     fn blockquote(&self) -> Style {
         Style::new()
-            .fg(c(C.overlay2))
+            .fg(self.0.overlay1)
             .add_modifier(Modifier::ITALIC)
     }
 
     fn html(&self) -> Style {
-        Style::new().fg(c(C.overlay1))
+        Style::new().fg(self.0.overlay1)
     }
 
     fn table_header(&self) -> Style {
-        Style::new().fg(c(C.lavender)).add_modifier(Modifier::BOLD)
+        Style::new()
+            .fg(self.0.lavender)
+            .add_modifier(Modifier::BOLD)
     }
 
     fn table_border(&self) -> Style {
-        Style::new().fg(c(C.surface2))
+        Style::new().fg(self.0.surface2)
     }
 
     fn list_marker(&self) -> Style {
-        Style::new().fg(c(C.peach))
+        Style::new().fg(self.0.peach)
     }
 }
 
@@ -304,7 +428,7 @@ fn owned(line: Line<'_>) -> Line<'static> {
 /// Split the spans of a line so that each match shows on a yellow background.
 /// A match that crosses two spans is not marked. Returns true when the line
 /// holds a marked match.
-fn highlight(line: &mut Line<'static>, pattern: &Regex) -> bool {
+fn highlight(line: &mut Line<'static>, pattern: &Regex, colors: Colors) -> bool {
     let mut found_any = false;
     let mut spans = Vec::with_capacity(line.spans.len());
     for span in line.spans.drain(..) {
@@ -318,7 +442,7 @@ fn highlight(line: &mut Line<'static>, pattern: &Regex) -> bool {
             ));
             spans.push(Span::styled(
                 found.as_str().to_string(),
-                span.style.fg(c(C.crust)).bg(c(C.yellow)),
+                span.style.fg(colors.crust).bg(colors.yellow),
             ));
             end = found.end();
         }
@@ -333,32 +457,41 @@ fn highlight(line: &mut Line<'static>, pattern: &Regex) -> bool {
 }
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
+    let colors = app.theme.colors();
     let (mode, color, hint) = match app.mode {
         Mode::Search => (
             " SEARCH ",
-            c(C.mauve),
+            colors.mauve,
             "type to filter  ↑↓ select  Enter open  Esc close search  ^D quit",
         ),
         Mode::Browse => (
             " BROWSE ",
-            c(C.green),
-            "↑↓ select  j/k scroll  gg/G top/end  s search  Enter open  q quit",
+            colors.green,
+            "s search  T theme  Enter open  ↑↓ select  j/k scroll  q quit",
         ),
+    };
+    let hint = if app.theme_menu.is_some() {
+        "↑↓ select theme  Enter apply  Esc cancel"
+    } else {
+        hint
     };
     let mut spans = vec![
         Span::styled(
             mode,
             Style::new()
                 .bg(color)
-                .fg(c(C.crust))
+                .fg(colors.badge_text)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!(" {hint} "), Style::new().fg(c(C.overlay1))),
+        Span::styled(
+            format!(" {} · {hint} ", app.theme.label()),
+            Style::new().fg(colors.overlay1),
+        ),
     ];
     if app.mode == Mode::Browse && !app.query.is_empty() {
         spans.push(Span::styled(
             format!(" filter: {}", app.query),
-            Style::new().fg(c(C.mauve)),
+            Style::new().fg(colors.mauve),
         ));
     }
     if let Some(first) = app.errors.first() {
@@ -368,28 +501,32 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         };
         spans.push(Span::styled(
             format!("  ⚠ {first}{more}"),
-            Style::new().fg(c(C.red)),
+            Style::new().fg(colors.red),
         ));
     }
     frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::new().bg(c(C.mantle))),
+        Paragraph::new(Line::from(spans)).style(Style::new().bg(colors.mantle)),
         area,
     );
 }
 
 /// The border of the panel that has the keyboard focus is brighter.
-fn focus_border(focused: bool) -> Style {
-    Style::new().fg(if focused { c(C.mauve) } else { c(C.surface2) })
+fn focus_border(focused: bool, colors: Colors) -> Style {
+    Style::new().fg(if focused {
+        colors.mauve
+    } else {
+        colors.surface2
+    })
 }
 
-fn agent_color(agent: Agent) -> Color {
+fn agent_color(agent: Agent, colors: Colors) -> Color {
     match agent {
-        Agent::Pi => c(C.mauve),
-        Agent::Codex => c(C.green),
-        Agent::Claude => c(C.peach),
-        Agent::Cursor => c(C.blue),
-        Agent::Agy => c(C.sapphire),
-        Agent::Devin => c(C.yellow),
+        Agent::Pi => colors.mauve,
+        Agent::Codex => colors.green,
+        Agent::Claude => colors.peach,
+        Agent::Cursor => colors.blue,
+        Agent::Agy => colors.sapphire,
+        Agent::Devin => colors.yellow,
     }
 }
 
@@ -412,6 +549,229 @@ pub fn ago(time: DateTime<Local>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::pattern;
+
+    fn preview_buffer(
+        preview: &Rendered,
+        width: u16,
+        height: u16,
+        scroll: usize,
+    ) -> ratatui::buffer::Buffer {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_preview_rows(
+                    frame,
+                    preview,
+                    frame.area(),
+                    scroll,
+                    0..preview.lines.len(),
+                    preview.key.3.colors(),
+                );
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn user_bar_covers_every_soft_wrapped_row() {
+        let messages = Ok(vec![
+            Message::new(Role::User, "abcdefghijklmnopqrstuvwx"),
+            Message::new(Role::Assistant, "done"),
+        ]);
+        for (width, rows) in [(8, 4), (12, 3), (80, 1)] {
+            let preview = render((0, String::new(), width, Theme::Frappe), &messages, width);
+            assert_eq!(preview.starts[1], rows);
+            let buffer = preview_buffer(&preview, width, 10, 0);
+            for row in 0..rows as u16 {
+                assert_eq!(buffer[(0, row)].symbol(), "▌");
+                assert_eq!(buffer[(1, row)].symbol(), " ");
+            }
+            assert_eq!(buffer[(0, rows as u16)].symbol(), " ");
+            assert_eq!(buffer[(0, rows as u16 + 1)].symbol(), "d");
+        }
+    }
+
+    #[test]
+    fn user_bar_stays_visible_when_scrolling_into_a_wrapped_message() {
+        let messages = Ok(vec![
+            Message::new(Role::User, "abcdefghijklmnopqrstuvwx"),
+            Message::new(Role::Assistant, "done"),
+        ]);
+        let preview = render((0, String::new(), 8, Theme::Frappe), &messages, 8);
+        let buffer = preview_buffer(&preview, 8, 6, 1);
+        for row in 0..3 {
+            assert_eq!(buffer[(0, row)].symbol(), "▌");
+        }
+        assert_eq!(buffer[(2, 0)].symbol(), "g");
+        assert_eq!(buffer[(0, 3)].symbol(), " ");
+        assert_eq!(buffer[(0, 4)].symbol(), "d");
+    }
+
+    #[test]
+    fn user_bar_covers_chinese_and_blank_lines_without_breaking_highlights() {
+        let messages = Ok(vec![
+            Message::new(Role::User, "中文中文\n\n终点"),
+            Message::new(Role::Assistant, "done"),
+        ]);
+        for theme in Theme::ALL {
+            let preview = render((0, "终点".into(), 6, theme), &messages, 6);
+            let buffer = preview_buffer(&preview, 6, 7, 0);
+            for row in 0..4 {
+                assert_eq!(buffer[(0, row)].symbol(), "▌");
+                assert_eq!(buffer[(0, row)].fg, theme.colors().blue);
+            }
+            assert_eq!(buffer[(2, 0)].symbol(), "中");
+            assert_eq!(buffer[(2, 1)].symbol(), "中");
+            assert_eq!(buffer[(2, 2)].symbol(), " ");
+            assert_eq!(buffer[(2, 3)].symbol(), "终");
+            assert_eq!(buffer[(2, 3)].bg, theme.colors().yellow);
+            assert_eq!(preview.first_match, Some(3));
+            assert_eq!(buffer[(0, 4)].symbol(), " ");
+            assert_eq!(buffer[(0, 5)].symbol(), "d");
+        }
+    }
+
+    #[test]
+    fn theme_menu_shows_choices_and_tracks_selection() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = App::new(Vec::new(), Vec::new());
+        app.theme_menu = Some(Theme::Midnight);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let screen: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+        assert!(screen.contains("┌ theme "));
+        assert!(screen.contains("● Frappe"));
+        assert!(screen.contains("›   Midnight"));
+        for theme in Theme::ALL {
+            assert!(screen.contains(theme.label()));
+        }
+        assert!(screen.contains("Enter apply"));
+        assert!(screen.contains("Esc cancel"));
+        app.theme_menu = None;
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(!screen.contains("┌ theme "));
+    }
+
+    #[test]
+    fn theme_menu_fits_small_terminals() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = App::new(Vec::new(), Vec::new());
+        app.theme_menu = Some(Theme::Akua);
+        for (width, height) in [(1, 1), (12, 4), (28, 8)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        }
+    }
+
+    #[test]
+    fn search_uses_the_upper_golden_section_and_stays_in_bounds() {
+        assert_eq!(
+            search_area(Rect::new(0, 0, 120, 50)),
+            Rect::new(22, 18, 76, 3)
+        );
+        for width in [0, 1, 20, 76, 120] {
+            for height in [0, 1, 2, 3, 8, 24, 50, 80] {
+                let area = Rect::new(4, 7, width, height);
+                let query = search_area(area);
+                assert!(query.x >= area.x && query.right() <= area.right());
+                assert!(query.y >= area.y && query.bottom() <= area.bottom());
+                if height >= 8 {
+                    let expected = f64::from(height) * 0.382;
+                    let center = f64::from(query.y - area.y + query.height / 2);
+                    assert!((center - expected).abs() <= 0.5);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn changing_theme_rebuilds_cached_preview_and_repaints_the_ui() {
+        use crate::model::{Session, Source};
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = App::new(
+            vec![Session {
+                agent: Agent::Pi,
+                id: "test".into(),
+                cwd: "/work/project".into(),
+                title: "Theme test".into(),
+                names: vec!["Login pane".into(), "Review tab".into()],
+                modified: Local::now(),
+                source: Source::File("/missing/session.jsonl".into()),
+            }],
+            Vec::new(),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+        for theme in [
+            Theme::Frappe,
+            Theme::Paper,
+            Theme::Midnight,
+            Theme::Orbit,
+            Theme::Akua,
+        ] {
+            app.theme = theme;
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            assert_eq!(app.preview.as_ref().unwrap().key.3, theme);
+            assert_eq!(
+                app.preview.as_ref().unwrap().lines[0].style.fg,
+                Some(theme.colors().red)
+            );
+            let buffer = terminal.backend().buffer();
+            assert_eq!(buffer[(1, 38)].bg, theme.colors().base);
+            let screen: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+            assert!(screen.contains(theme.label()));
+            assert!(screen.contains("Login pane · Review tab"));
+            assert!(screen.contains("Theme test"));
+        }
+    }
+
+    #[test]
+    fn every_theme_colors_markdown_and_compound_search_matches() {
+        let messages = Ok(vec![
+            Message::new(Role::User, "Find a sentence"),
+            Message::new(Role::Assistant, "# Heading\n\nThe sentence is here."),
+        ]);
+        for theme in [
+            Theme::Frappe,
+            Theme::Paper,
+            Theme::Midnight,
+            Theme::Orbit,
+            Theme::Akua,
+        ] {
+            let rendered = render((0, "devin + sentence".into(), 80, theme), &messages, 80);
+            let colors = theme.colors();
+            assert!(rendered.first_match.is_some());
+            assert!(
+                rendered
+                    .lines
+                    .iter()
+                    .flat_map(|line| &line.spans)
+                    .any(|span| {
+                        span.content == "sentence" && span.style.bg == Some(colors.yellow)
+                    })
+            );
+            assert!(rendered.lines.iter().any(|line| {
+                line.to_string() == "Heading"
+                    && line
+                        .spans
+                        .iter()
+                        .any(|span| span.style.fg.or(line.style.fg) == Some(colors.mauve))
+            }));
+        }
+    }
 
     #[test]
     fn search_overlay_is_only_visible_in_search_mode() {
@@ -435,7 +795,11 @@ mod tests {
     #[test]
     fn highlight_marks_each_match() {
         let mut line = Line::from("a Foo b foo");
-        assert!(highlight(&mut line, &pattern("foo")));
+        assert!(highlight(
+            &mut line,
+            &pattern("foo"),
+            Theme::default().colors()
+        ));
         let texts: Vec<_> = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(texts, ["a ", "Foo", " b ", "foo", ""]);
     }
@@ -446,9 +810,10 @@ mod tests {
             Message::new(Role::User, "one\ntwo"),
             Message::new(Role::Assistant, "## Title\n\n```rust\nlet needle = 1;\n```"),
         ]);
-        let rendered = render((0, "needle".into(), 80), &messages, 80);
+        let rendered = render((0, "needle".into(), 80, Theme::default()), &messages, 80);
         let text: Vec<String> = rendered.lines.iter().map(|l| l.to_string()).collect();
-        assert_eq!(text[..3], ["▌ one", "▌ two", ""]);
+        assert_eq!(text[..3], ["one", "two", ""]);
+        assert_eq!(rendered.user_lines[..3], [true, true, false]);
         assert!(!text.iter().any(|l| l.contains("##") || l.contains("```")));
         assert!(text.iter().any(|l| l == "Title"));
         let needle = text.iter().position(|l| l.contains("let needle")).unwrap();

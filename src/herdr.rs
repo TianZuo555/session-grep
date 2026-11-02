@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
 use crate::model::{Session, Source};
+use crate::names::{self, Names};
 use crate::open;
 
 /// Where Enter opens the session.
@@ -81,6 +82,45 @@ pub fn panes() -> Result<Vec<Pane>> {
         .collect())
 }
 
+/// Read labels only for panes whose agent session identity is known.
+pub fn names() -> Result<Vec<Names>> {
+    let list = herdr(&["pane", "list"])?;
+    let panes = list["result"]["panes"]
+        .as_array()
+        .context("herdr pane list returned no panes")?;
+    let mut tabs = std::collections::HashMap::new();
+    for workspace in panes
+        .iter()
+        .filter_map(|pane| pane["workspace_id"].as_str())
+    {
+        if tabs.contains_key(workspace) {
+            continue;
+        }
+        let list = herdr(&["tab", "list", "--workspace", workspace])?;
+        tabs.insert(workspace, list);
+    }
+    Ok(panes
+        .iter()
+        .filter_map(|pane| {
+            let tab_label = pane["workspace_id"]
+                .as_str()
+                .and_then(|workspace| tabs.get(workspace))
+                .and_then(|list| list["result"]["tabs"].as_array())
+                .and_then(|tabs| tabs.iter().find(|tab| tab["tab_id"] == pane["tab_id"]))
+                .and_then(|tab| tab["label"].as_str())
+                .unwrap_or_default();
+            named_pane(pane, tab_label)
+        })
+        .collect())
+}
+
+fn named_pane(pane: &Value, tab_label: &str) -> Option<Names> {
+    Some(Names {
+        identity: pane["agent_session"]["value"].as_str()?.to_string(),
+        names: names::custom_names([pane["label"].as_str().unwrap_or_default(), tab_label]),
+    })
+}
+
 pub fn open(session: &Session, target: &Target) -> Result<()> {
     match target {
         Target::Focus { pane_id } => {
@@ -137,6 +177,7 @@ mod tests {
             id: "abc".into(),
             cwd: "/w/project".into(),
             title: String::new(),
+            names: Vec::new(),
             modified: Local::now(),
             source: Source::File("/s/a_abc.jsonl".into()),
         }
@@ -150,6 +191,24 @@ mod tests {
             foreground_cwd: cwd.into(),
             agent_session: agent_session.map(String::from),
         }
+    }
+
+    #[test]
+    fn renamed_pane_and_tab_keep_the_agent_identity() {
+        let pane = serde_json::json!({
+            "label": "Login worker",
+            "agent_session": {"value": "/s/a_abc.jsonl"},
+        });
+        let entry = named_pane(&pane, "Auth project").unwrap();
+        assert_eq!(entry.identity, "/s/a_abc.jsonl");
+        assert_eq!(entry.names, ["Login worker", "Auth project"]);
+        assert!(
+            named_pane(
+                &serde_json::json!({"label":"Unrelated shell"}),
+                "Auth project"
+            )
+            .is_none()
+        );
     }
 
     #[test]
