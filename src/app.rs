@@ -4,15 +4,16 @@ use std::time::{Duration, Instant};
 
 use crate::model::Session;
 use crate::search::{ContentHits, ContentSearch, Transcripts, metadata_hits};
+use crate::theme::Theme;
 use crate::ui::Rendered;
 
 /// How long the query must stay unchanged before the content scan starts.
 const DEBOUNCE: Duration = Duration::from_millis(200);
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Mode {
     Search,
-    Preview,
+    Browse,
 }
 
 pub struct App {
@@ -23,6 +24,8 @@ pub struct App {
     pub selected: usize,
     pub query: String,
     pub mode: Mode,
+    pub theme: Theme,
+    pub theme_menu: Option<Theme>,
     /// The first visible row of the wrapped preview.
     pub scroll: usize,
     pub preview: Option<Rendered>,
@@ -53,7 +56,9 @@ impl App {
             transcripts,
             selected: 0,
             query: String::new(),
-            mode: Mode::Search,
+            mode: Mode::Browse,
+            theme: Theme::default(),
+            theme_menu: None,
             scroll: 0,
             preview: None,
             jump_to_match: false,
@@ -74,6 +79,8 @@ impl App {
     }
 
     pub fn set_query(&mut self, query: String) {
+        self.latest = self.search.cancel();
+        self.scanning = false;
         self.query = query;
         let query = self.query.trim();
         if query.is_empty() {
@@ -126,5 +133,28 @@ impl App {
 
     pub fn select_previous(&mut self) {
         self.selected = self.selected.saturating_sub(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn editing_or_clearing_query_discards_queued_old_results() {
+        for query in ["new query", ""] {
+            let mut app = App::new(Vec::new(), Vec::new());
+            let (tx, rx) = channel();
+            app.rx = rx;
+            tx.send(ContentHits {
+                generation: app.latest,
+                hits: vec![99],
+            })
+            .unwrap();
+            app.set_query(query.into());
+            app.tick();
+            assert!(app.visible.is_empty());
+            assert!(!app.scanning);
+        }
     }
 }

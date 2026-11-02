@@ -53,6 +53,9 @@ pub fn discover(since: DateTime<Local>) -> Result<Vec<Result<Session>>> {
             },
             id,
             cwd: first_workspace(&workspaces),
+            names: Vec::new(),
+            pane_name: None,
+            tab_name: None,
             modified,
             source: Source::Database(db),
         }));
