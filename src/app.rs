@@ -9,10 +9,10 @@ use crate::ui::Rendered;
 /// How long the query must stay unchanged before the content scan starts.
 const DEBOUNCE: Duration = Duration::from_millis(200);
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Mode {
     Search,
-    Preview,
+    Browse,
 }
 
 pub struct App {
@@ -53,7 +53,7 @@ impl App {
             transcripts,
             selected: 0,
             query: String::new(),
-            mode: Mode::Search,
+            mode: Mode::Browse,
             scroll: 0,
             preview: None,
             jump_to_match: false,

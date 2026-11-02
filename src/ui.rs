@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use regex::Regex;
 use tui_markdown::{Options, StyleSheet};
 
@@ -39,11 +39,25 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).areas(frame.area());
     let [left, right] =
         Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(main);
-    let [query, list] = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).areas(left);
-    draw_query(frame, app, query);
-    draw_list(frame, app, list);
+    draw_list(frame, app, left);
     draw_preview(frame, app, right);
     draw_status(frame, app, status);
+    if app.mode == Mode::Search {
+        let [_, query, _] = Layout::horizontal([
+            Constraint::Fill(1),
+            Constraint::Length(76),
+            Constraint::Fill(1),
+        ])
+        .areas(main);
+        let [_, query, _] = Layout::vertical([
+            Constraint::Length(2),
+            Constraint::Length(3),
+            Constraint::Min(0),
+        ])
+        .areas(query);
+        frame.render_widget(Clear, query);
+        draw_query(frame, app, query);
+    }
 }
 
 fn draw_query(frame: &mut Frame, app: &App, area: Rect) {
@@ -52,15 +66,11 @@ fn draw_query(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         " search "
     };
-    let style = match app.mode {
-        Mode::Search => Style::new().fg(c(C.mauve)),
-        Mode::Preview => Style::new().fg(c(C.surface2)),
-    };
-    let caret = if app.mode == Mode::Search { "▏" } else { "" };
+    let style = Style::new().fg(c(C.mauve));
     let line = Line::from(vec![
         Span::styled("> ", style),
         Span::raw(app.query.clone()),
-        Span::styled(caret, style),
+        Span::styled("▏", style),
     ]);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -109,7 +119,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(focus_border(app.mode == Mode::Preview))
+                .border_style(focus_border(app.mode == Mode::Browse))
                 .title(title),
         )
         .highlight_style(Style::new().bg(c(C.surface0)).add_modifier(Modifier::BOLD));
@@ -120,7 +130,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(focus_border(app.mode == Mode::Preview));
+        .border_style(focus_border(app.mode == Mode::Browse));
     let inner = block.inner(area);
     let Some(index) = app.current() else {
         frame.render_widget(Paragraph::new("no session").block(block), area);
@@ -327,12 +337,12 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Search => (
             " SEARCH ",
             c(C.mauve),
-            "type to filter  ↑↓ select  Enter preview  ^D quit",
+            "type to filter  ↑↓ select  Enter open  Esc close search  ^D quit",
         ),
-        Mode::Preview => (
-            " PREVIEW ",
+        Mode::Browse => (
+            " BROWSE ",
             c(C.green),
-            "↑↓ select  j/k scroll  gg/G top/end  o open  Esc search  q quit",
+            "↑↓ select  j/k scroll  gg/G top/end  s search  Enter open  q quit",
         ),
     };
     let mut spans = vec![
@@ -345,6 +355,12 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         ),
         Span::styled(format!(" {hint} "), Style::new().fg(c(C.overlay1))),
     ];
+    if app.mode == Mode::Browse && !app.query.is_empty() {
+        spans.push(Span::styled(
+            format!(" filter: {}", app.query),
+            Style::new().fg(c(C.mauve)),
+        ));
+    }
     if let Some(first) = app.errors.first() {
         let more = match app.errors.len() {
             1 => String::new(),
@@ -396,6 +412,25 @@ pub fn ago(time: DateTime<Local>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_overlay_is_only_visible_in_search_mode() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = App::new(Vec::new(), Vec::new());
+        app.set_query("needle".into());
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        for mode in [Mode::Browse, Mode::Search, Mode::Browse] {
+            app.mode = mode;
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let screen: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+            assert_eq!(screen.contains("┌ search "), mode == Mode::Search);
+            assert_eq!(screen.contains("> needle▏"), mode == Mode::Search);
+            assert!(screen.contains("sessions 0/0"));
+            assert!(screen.contains("Enter open"));
+        }
+    }
 
     #[test]
     fn highlight_marks_each_match() {

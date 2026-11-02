@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::model::{Session, Source};
 use crate::open;
 
-/// Where `o` opens the session.
+/// Where Enter opens the session.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Target {
     /// This agent pane already runs the session.

@@ -3,6 +3,7 @@ mod herdr;
 mod model;
 mod open;
 mod providers;
+mod rex;
 mod search;
 mod ui;
 
@@ -78,7 +79,11 @@ fn main() -> Result<()> {
 
     if let Some(index) = app.open {
         let session = &app.sessions[index];
-        if herdr::inside() {
+        if rex::inside() {
+            if rex::open(session)? {
+                return Ok(());
+            }
+        } else if herdr::inside() {
             let own_pane = std::env::var("HERDR_PANE_ID").unwrap_or_default();
             if let Some(target) = herdr::target(session, &herdr::panes()?, &own_pane) {
                 return herdr::open(session, &target);
@@ -120,15 +125,19 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         app.quit = true;
         return;
     }
+    if key.code == KeyCode::Enter {
+        app.open = app.current();
+        return;
+    }
     match app.mode {
         Mode::Search => search_key(app, key),
-        Mode::Preview => preview_key(app, key),
+        Mode::Browse => browse_key(app, key),
     }
 }
 
 fn search_key(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Enter => app.mode = Mode::Preview,
+        KeyCode::Esc => app.mode = Mode::Browse,
         KeyCode::Up => app.select_previous(),
         KeyCode::Down => app.select_next(),
         KeyCode::Backspace => {
@@ -148,11 +157,11 @@ fn search_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-fn preview_key(app: &mut App, key: KeyEvent) {
+fn browse_key(app: &mut App, key: KeyEvent) {
     let after_g = std::mem::take(&mut app.pending_g);
     match key.code {
         KeyCode::Char('q') => app.quit = true,
-        KeyCode::Esc | KeyCode::Char('/') => app.mode = Mode::Search,
+        KeyCode::Char('s' | 'S') => app.mode = Mode::Search,
         KeyCode::Down => app.select_next(),
         KeyCode::Up => app.select_previous(),
         KeyCode::Char('j') => app.scroll += 1,
@@ -161,7 +170,82 @@ fn preview_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('g') => app.pending_g = true,
         // The preview clamps this to the last page.
         KeyCode::Char('G') => app.scroll = usize::MAX,
-        KeyCode::Char('o') => app.open = app.current(),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use model::{Agent, Source};
+
+    fn app() -> App {
+        App::new(
+            ["first", "second"]
+                .into_iter()
+                .map(|id| Session {
+                    agent: Agent::Pi,
+                    id: id.into(),
+                    cwd: "/work/project".into(),
+                    title: id.into(),
+                    modified: Local::now(),
+                    source: Source::File("/missing/session.jsonl".into()),
+                })
+                .collect(),
+            Vec::new(),
+        )
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        handle_key(app, KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn search_is_explicit_and_escape_preserves_the_filter() {
+        let mut app = app();
+        assert_eq!(app.mode, Mode::Browse);
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.mode, Mode::Search);
+        for ch in "second".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        assert_eq!(app.query, "second");
+        assert_eq!(app.current(), Some(1));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Browse);
+        assert_eq!(app.query, "second");
+        assert_eq!(app.current(), Some(1));
+        press(&mut app, KeyCode::Char('S'));
+        assert_eq!(app.mode, Mode::Search);
+        assert_eq!(app.query, "second");
+    }
+
+    #[test]
+    fn enter_opens_the_selection_in_both_modes() {
+        for mode in [Mode::Browse, Mode::Search] {
+            let mut app = app();
+            app.mode = mode;
+            press(&mut app, KeyCode::Down);
+            press(&mut app, KeyCode::Enter);
+            assert_eq!(app.open, Some(1));
+        }
+        let mut empty = App::new(Vec::new(), Vec::new());
+        press(&mut empty, KeyCode::Enter);
+        assert_eq!(empty.open, None);
+    }
+
+    #[test]
+    fn search_input_does_not_trigger_browse_shortcuts() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.open, None);
+        press(&mut app, KeyCode::Char('s'));
+        for ch in "oqjks".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        assert_eq!(app.query, "oqjks");
+        assert!(!app.quit);
+        assert_eq!(app.open, None);
+        assert_eq!(app.scroll, 0);
     }
 }
