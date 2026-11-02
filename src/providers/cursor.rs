@@ -66,6 +66,8 @@ fn read_chat(dir: &Path) -> Result<Session> {
         cwd: meta["cwd"].as_str().unwrap_or_default().to_string(),
         title,
         names: Vec::new(),
+        pane_name: None,
+        tab_name: None,
         modified: Local
             .timestamp_millis_opt(updated)
             .single()

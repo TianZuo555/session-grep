@@ -45,6 +45,8 @@ pub struct Session {
     pub title: String,
     /// User-defined terminal pane and tab labels.
     pub names: Vec<String>,
+    pub pane_name: Option<String>,
+    pub tab_name: Option<String>,
     pub modified: DateTime<Local>,
     pub source: Source,
 }
@@ -61,6 +63,14 @@ impl Session {
             self.names.join(" ")
         )
         .to_lowercase()
+    }
+
+    pub fn resume_label(&self) -> &str {
+        self.tab_name
+            .as_deref()
+            .or(self.pane_name.as_deref())
+            .or_else(|| self.names.first().map(String::as_str))
+            .unwrap_or_else(|| self.agent.label())
     }
 
     /// The command that reopens this session.
@@ -158,9 +168,23 @@ mod tests {
             cwd: "/w".into(),
             title: String::new(),
             names: Vec::new(),
+            pane_name: None,
+            tab_name: None,
             modified: Local::now(),
             source,
         }
+    }
+
+    #[test]
+    fn resume_label_prefers_the_tab_then_pane_then_saved_name() {
+        let mut session = session(Agent::Pi, Source::File("/session.jsonl".into()));
+        assert_eq!(session.resume_label(), "pi");
+        session.names = vec!["Saved name".into()];
+        assert_eq!(session.resume_label(), "Saved name");
+        session.pane_name = Some("Worker".into());
+        assert_eq!(session.resume_label(), "Worker");
+        session.tab_name = Some("Project".into());
+        assert_eq!(session.resume_label(), "Project");
     }
 
     #[test]

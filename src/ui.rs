@@ -132,39 +132,55 @@ fn draw_query(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     let colors = app.theme.colors();
     let width = area.width.saturating_sub(4) as usize;
+    let query = Query::new(&app.query);
+    let pattern = query.highlight_pattern();
+    let current = app.current();
     let items: Vec<ListItem> = app
         .visible
         .iter()
         .map(|&index| {
             let session = &app.sessions[index];
-            let head = Line::from(vec![
-                Span::styled(
-                    format!("{:<7}", session.agent.label()),
-                    Style::new()
-                        .fg(agent_color(session.agent, colors))
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{:<8}", ago(session.modified)),
-                    Style::new().fg(colors.overlay1),
-                ),
-                Span::styled(
+            let agent_style = Style::new()
+                .fg(agent_color(session.agent, colors))
+                .add_modifier(Modifier::BOLD);
+            let agent_style = if query.agent() == Some(session.agent) {
+                agent_style.fg(colors.crust).bg(colors.yellow)
+            } else {
+                agent_style
+            };
+            let mut head = highlighted_line(
+                format!("{:<7}", session.agent.label()),
+                agent_style,
+                pattern.as_ref(),
+                colors,
+            );
+            head.spans.push(Span::styled(
+                format!("{:<8}", ago(session.modified)),
+                Style::new().fg(colors.overlay1),
+            ));
+            head.spans.extend(
+                highlighted_line(
                     one_line(&short_path(&session.cwd), width.saturating_sub(15)),
                     Style::new().fg(colors.teal),
-                ),
-            ]);
+                    pattern.as_ref(),
+                    colors,
+                )
+                .spans,
+            );
             let title = if session.title.is_empty() {
                 "(no prompt)"
             } else {
                 &session.title
             };
-            let title = Line::from(Span::styled(
+            let title = highlighted_line(
                 format!("  {}", one_line(title, width.saturating_sub(2))),
                 Style::new().fg(colors.subtext0),
-            ));
+                pattern.as_ref(),
+                colors,
+            );
             let mut lines = vec![head];
             if !session.names.is_empty() {
-                lines.push(Line::from(Span::styled(
+                lines.push(highlighted_line(
                     format!(
                         "  {}",
                         one_line(&session.names.join(" · "), width.saturating_sub(2))
@@ -172,27 +188,45 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
                     Style::new()
                         .fg(colors.lavender)
                         .add_modifier(Modifier::BOLD),
-                )));
+                    pattern.as_ref(),
+                    colors,
+                ));
             }
             lines.push(title);
-            ListItem::new(lines)
+            // Set the row background before drawing text so that match spans
+            // retain their own background on the selected item.
+            let style = if current == Some(index) {
+                Style::new()
+                    .bg(colors.surface0)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::new()
+            };
+            ListItem::new(lines).style(style)
         })
         .collect();
     let title = format!(" sessions {}/{} ", app.visible.len(), app.sessions.len());
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(focus_border(app.mode == Mode::Browse, colors))
-                .title(title),
-        )
-        .highlight_style(
-            Style::new()
-                .bg(colors.surface0)
-                .add_modifier(Modifier::BOLD),
-        );
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(focus_border(app.mode == Mode::Browse, colors))
+            .title(title),
+    );
     let mut state = ListState::default().with_selected(app.current().map(|_| app.selected));
     frame.render_stateful_widget(list, area, &mut state);
+}
+
+fn highlighted_line(
+    text: String,
+    style: Style,
+    pattern: Option<&Regex>,
+    colors: Colors,
+) -> Line<'static> {
+    let mut line = Line::from(Span::styled(text, style));
+    if let Some(pattern) = pattern {
+        highlight(&mut line, pattern, colors);
+    }
+    line
 }
 
 fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -551,6 +585,107 @@ mod tests {
     use super::*;
     use crate::search::pattern;
 
+    fn list_app() -> App {
+        use crate::model::{Session, Source};
+
+        App::new(
+            (0..2)
+                .map(|index| Session {
+                    agent: Agent::Devin,
+                    id: index.to_string(),
+                    cwd: "/work/login".into(),
+                    title: "Fix LOGIN and test".into(),
+                    names: vec!["Login pane".into()],
+                    pane_name: None,
+                    tab_name: None,
+                    modified: Local::now(),
+                    source: Source::Row {
+                        db: "/missing/session.db".into(),
+                        session_id: index.to_string(),
+                    },
+                })
+                .collect(),
+            Vec::new(),
+        )
+    }
+
+    fn list_buffer(app: &App) -> ratatui::buffer::Buffer {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut terminal = Terminal::new(TestBackend::new(90, 12)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    Block::new().style(Style::new().bg(app.theme.colors().base)),
+                    frame.area(),
+                );
+                draw_list(frame, app, frame.area());
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn list_highlights_agent_names_paths_and_titles_even_on_the_selected_item() {
+        let mut app = list_app();
+        app.set_query("devin + LOGIN".into());
+        for theme in Theme::ALL {
+            app.theme = theme;
+            let colors = theme.colors();
+            for mode in [Mode::Search, Mode::Browse] {
+                app.mode = mode;
+                let buffer = list_buffer(&app);
+                for (head, names, title) in [(1, 2, 3), (4, 5, 6)] {
+                    for (start, end, row) in
+                        [(1, 6, head), (22, 27, head), (3, 8, names), (7, 12, title)]
+                    {
+                        for column in start..end {
+                            assert_eq!(
+                                buffer[(column, row)].bg,
+                                colors.yellow,
+                                "{theme:?} at {column},{row}"
+                            );
+                            assert_eq!(buffer[(column, row)].fg, colors.crust);
+                        }
+                    }
+                    assert_ne!(buffer[(8, head)].bg, colors.yellow);
+                }
+                assert_eq!(buffer[(80, 3)].bg, colors.surface0);
+                assert_eq!(buffer[(80, 6)].bg, colors.base);
+            }
+        }
+    }
+
+    #[test]
+    fn clearing_search_removes_list_match_highlights() {
+        let mut app = list_app();
+        app.set_query("devin login".into());
+        app.set_query(String::new());
+        let buffer = list_buffer(&app);
+        assert!(
+            buffer
+                .content
+                .iter()
+                .all(|cell| cell.bg != app.theme.colors().yellow)
+        );
+        assert_eq!(buffer[(80, 3)].bg, app.theme.colors().surface0);
+    }
+
+    #[test]
+    fn content_only_matches_do_not_highlight_unmatched_list_text() {
+        let mut app = list_app();
+        app.set_query("body-only".into());
+        // A content scan can add a session whose displayed metadata does not match.
+        app.visible = vec![0];
+        let buffer = list_buffer(&app);
+        assert!(
+            buffer
+                .content
+                .iter()
+                .all(|cell| cell.bg != app.theme.colors().yellow)
+        );
+    }
+
     fn preview_buffer(
         preview: &Rendered,
         width: u16,
@@ -709,6 +844,8 @@ mod tests {
                 cwd: "/work/project".into(),
                 title: "Theme test".into(),
                 names: vec!["Login pane".into(), "Review tab".into()],
+                pane_name: None,
+                tab_name: None,
                 modified: Local::now(),
                 source: Source::File("/missing/session.jsonl".into()),
             }],

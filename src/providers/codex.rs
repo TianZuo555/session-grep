@@ -28,6 +28,8 @@ pub fn discover(since: DateTime<Local>) -> Result<Vec<Result<Session>>> {
             cwd: field("cwd"),
             title: json::title_of(&messages(&head)),
             names: Vec::new(),
+            pane_name: None,
+            tab_name: None,
             modified: found.modified,
             source: Source::File(found.path),
         }

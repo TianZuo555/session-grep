@@ -158,6 +158,10 @@ impl Query {
         }
     }
 
+    pub fn agent(&self) -> Option<Agent> {
+        self.agent
+    }
+
     fn accepts_agent(&self, session: &Session) -> bool {
         self.agent.is_none_or(|agent| session.agent == agent)
     }
@@ -221,6 +225,8 @@ mod tests {
             cwd: "/work/project".into(),
             title: title.into(),
             names: Vec::new(),
+            pane_name: None,
+            tab_name: None,
             modified: chrono::Local::now(),
             source: crate::model::Source::File("/missing/session.jsonl".into()),
         }

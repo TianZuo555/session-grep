@@ -96,6 +96,7 @@ fn main() -> Result<()> {
             if let Some(target) = herdr::target(session, &herdr::panes()?, &own_pane) {
                 return herdr::open(session, &target);
             }
+            herdr::restore_current_names(session);
         }
         eprintln!("{}", open::describe(session));
         return Err(open::exec(session));
@@ -218,6 +219,8 @@ mod tests {
                     cwd: "/work/project".into(),
                     title: id.into(),
                     names: Vec::new(),
+                    pane_name: None,
+                    tab_name: None,
                     modified: Local::now(),
                     source: Source::File("/missing/session.jsonl".into()),
                 })

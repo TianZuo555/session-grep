@@ -14,6 +14,19 @@ pub struct Names {
     /// The agent's session ID or transcript path, never a terminal ID.
     pub identity: String,
     pub names: Vec<String>,
+    pub pane_name: Option<String>,
+    pub tab_name: Option<String>,
+}
+
+impl Names {
+    pub fn new(identity: String, pane: &str, tab: &str) -> Self {
+        Self {
+            identity,
+            names: custom_names([pane, tab]),
+            pane_name: custom_names([pane]).into_iter().next(),
+            tab_name: custom_names([tab]).into_iter().next(),
+        }
+    }
 }
 
 pub fn refresh(sessions: &mut [Session]) -> Result<()> {
@@ -25,6 +38,14 @@ pub fn refresh(sessions: &mut [Session]) -> Result<()> {
         .unwrap_or_default();
     for session in sessions.iter_mut() {
         session.names = cached.get(&key(session)).cloned().unwrap_or_default();
+        session.pane_name = cached
+            .get(&format!("{}:pane", key(session)))
+            .and_then(|names| names.first())
+            .cloned();
+        session.tab_name = cached
+            .get(&format!("{}:tab", key(session)))
+            .and_then(|names| names.first())
+            .cloned();
     }
     let live = if crate::rex::inside() {
         crate::rex::names(sessions)?
@@ -39,6 +60,14 @@ pub fn refresh(sessions: &mut [Session]) -> Result<()> {
             cached.remove(&key(session));
         } else {
             cached.insert(key(session), session.names.clone());
+        }
+        for (kind, name) in [("pane", &session.pane_name), ("tab", &session.tab_name)] {
+            let key = format!("{}:{kind}", key(session));
+            if let Some(name) = name {
+                cached.insert(key, vec![name.clone()]);
+            } else {
+                cached.remove(&key);
+            }
         }
     }
     if let Some(path) = cache_path {
@@ -58,11 +87,15 @@ pub fn apply(sessions: &mut [Session], live: &[Names]) {
     for session in sessions {
         let mut names = Vec::new();
         let mut matched = false;
+        let mut pane_name = None;
+        let mut tab_name = None;
         for entry in live
             .iter()
             .filter(|entry| identifies(session, &entry.identity))
         {
             matched = true;
+            pane_name = pane_name.or_else(|| entry.pane_name.clone());
+            tab_name = tab_name.or_else(|| entry.tab_name.clone());
             for name in &entry.names {
                 let name = name.trim();
                 if !name.is_empty() && !names.iter().any(|old| old == name) {
@@ -72,6 +105,8 @@ pub fn apply(sessions: &mut [Session], live: &[Names]) {
         }
         if matched {
             session.names = names;
+            session.pane_name = pane_name;
+            session.tab_name = tab_name;
         }
     }
 }
@@ -242,6 +277,8 @@ mod tests {
             cwd: "/work/project".into(),
             title: "Original prompt".into(),
             names: Vec::new(),
+            pane_name: None,
+            tab_name: None,
             modified: chrono::Local::now(),
             source: Source::File(format!("/sessions/{id} file.jsonl").into()),
         }
@@ -253,17 +290,14 @@ mod tests {
         apply(
             &mut sessions,
             &[
-                Names {
-                    identity: "first".into(),
-                    names: vec!["Fix login".into()],
-                },
-                Names {
-                    identity: "/sessions/first file.jsonl".into(),
-                    names: vec!["Fix login".into(), "Review".into()],
-                },
+                Names::new("first".into(), "Fix login", ""),
+                Names::new("/sessions/first file.jsonl".into(), "Fix login", "Review"),
             ],
         );
         assert_eq!(sessions[0].names, ["Fix login", "Review"]);
+        assert_eq!(sessions[0].pane_name.as_deref(), Some("Fix login"));
+        assert_eq!(sessions[0].tab_name.as_deref(), Some("Review"));
+        assert_eq!(sessions[0].resume_label(), "Review");
         assert_eq!(sessions[0].title, "Original prompt");
         assert!(sessions[0].haystack().contains("fix login"));
         assert_eq!(
@@ -271,14 +305,10 @@ mod tests {
             [0]
         );
         assert!(sessions[1].names.is_empty());
-        apply(
-            &mut sessions,
-            &[Names {
-                identity: "first".into(),
-                names: Vec::new(),
-            }],
-        );
+        apply(&mut sessions, &[Names::new("first".into(), "", "")]);
         assert!(sessions[0].names.is_empty());
+        assert_eq!(sessions[0].pane_name, None);
+        assert_eq!(sessions[0].tab_name, None);
     }
 
     #[test]

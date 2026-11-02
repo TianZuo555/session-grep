@@ -69,13 +69,11 @@ pub fn names(sessions: &[Session]) -> Result<Vec<Names>> {
                     if let Some(session) =
                         names::resolve_rex(sessions, agent, cwd, &command, block_id)
                     {
-                        result.push(Names {
-                            identity: session.id.clone(),
-                            names: names::custom_names([
-                                block["label"].as_str().unwrap_or_default(),
-                                window["label"].as_str().unwrap_or_default(),
-                            ]),
-                        });
+                        result.push(Names::new(
+                            session.id.clone(),
+                            block["label"].as_str().unwrap_or_default(),
+                            window["label"].as_str().unwrap_or_default(),
+                        ));
                     }
                 }
             }
@@ -158,7 +156,7 @@ pub fn open(session: &Session) -> Result<bool> {
                 "new".into(),
                 "-s".into(),
                 id.into(),
-                session.agent.label().into(),
+                session.resume_label().into(),
                 "-c".into(),
                 session.cwd.clone(),
                 "--json".into(),
@@ -169,6 +167,13 @@ pub fn open(session: &Session) -> Result<bool> {
             let window = created["window_id"]
                 .as_str()
                 .context("rex window new returned no window")?;
+            if let Some(block) = created["block_ids"]
+                .as_array()
+                .and_then(|blocks| blocks.first())
+                .and_then(Value::as_str)
+            {
+                restore_pane_name(session, id, block);
+            }
             // Creating a window already focuses it within its session. Only
             // switching to another session needs the app's Remote Control.
             if id != own_session {
@@ -195,7 +200,31 @@ pub fn open(session: &Session) -> Result<bool> {
             return Ok(true);
         }
     }
+    if let Some(own) = own {
+        restore_pane_name(session, &own_session, &own_block);
+        if (!session.names.is_empty() || session.tab_name.is_some() || session.pane_name.is_some())
+            && let Some(window) = own["window_id"].as_str()
+            && let Err(error) = run(&[
+                "window",
+                "rename",
+                "-s",
+                &own_session,
+                window,
+                session.resume_label(),
+            ])
+        {
+            eprintln!("sgrep: cannot restore tab name: {error}");
+        }
+    }
     Ok(false)
+}
+
+fn restore_pane_name(session: &Session, target: &str, block: &str) {
+    if let Some(name) = session.pane_name.as_deref()
+        && let Err(error) = run(&["block", "rename", "-s", target, block, name])
+    {
+        eprintln!("sgrep: cannot restore pane name: {error}");
+    }
 }
 
 fn in_directory(process: &Value, cwd: &str) -> bool {
